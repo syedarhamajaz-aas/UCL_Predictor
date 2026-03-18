@@ -69,6 +69,7 @@ def simulate_two_legs(team_1, team_2, model, features, engine):
     if team_1 not in classes or team_2 not in classes:
         print(f"⚠️ Error: {team_1} or {team_2} not found in training data.")
         return team_1 # Default fallback
+    
         
     idx_1 = classes.index(team_1)
     idx_2 = classes.index(team_2)
@@ -148,13 +149,13 @@ if __name__ == "__main__":
     trained_model, feature_cols, db_engine = load_and_train_model()
     round_of_16_draw = [
         ('Chelsea', 'Paris Saint-Germain'),
-        ('Liverpool', 'PROXY_FOR_GALATASARAY'), 
+        ('Liverpool', 'Galatasaray'), 
         ('Manchester City', 'Real Madrid'),
         ('Bayern Munich', 'Atalanta'),
         ('Barcelona', 'Newcastle United'),
         ('Tottenham Hotspur', 'Atlético Madrid'),
-        ('PROXY_FOR_SPORTING', 'PROXY_FOR_BODO'), 
-        ('Arsenal', 'Bayer Leverkusen')
+        ('Sporting CP', 'Bodø/Glimt'), 
+        ('Arsenal', 'Leverkusen') 
     ]
     
     # Run the simulation!
