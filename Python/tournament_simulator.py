@@ -3,159 +3,336 @@ import numpy as np
 from sqlalchemy import create_engine
 from sklearn.ensemble import RandomForestClassifier
 
-# --- 1. CORE SETUP AND MODEL TRAINING ---
+# ============================================================
+# 1. CORE SETUP AND MODEL TRAINING
+# ============================================================
 def load_and_train_model():
-    print("⚙️ Booting up the Tournament Engine and training the Random Forest...")
+    print("⚙️  Booting up the UCL Tournament Engine...")
+    print("⚙️  Training Random Forest on full match dataset...")
+    print("=" * 60)
+
     db_url = "postgresql+psycopg2://postgres:Student%40123@127.0.0.1:1234/ucl_predictor"
     engine = create_engine(db_url)
-    
-    # Pull the exact same master dataset
+
     df = pd.read_sql("SELECT * FROM final_ml_dataset;", engine).dropna()
-    y = df['winning_team']
-    X = df.drop(columns=['home_team', 'away_team', 'winning_team'])
-    
-    # Train the model on the FULL dataset for maximum tournament accuracy
+
+    y = df['actual_result']
+    X = df.drop(columns=['home_team', 'away_team', 'actual_result',
+                          'actual_home_goals', 'actual_away_goals', 'result_id'])
+
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, y)
-    
+
+    print("✅  Model trained successfully.\n")
     return model, X.columns, engine
 
-# --- 2. MATCH FEATURE EXTRACTOR ---
-def get_match_features(home_team, away_team, engine, feature_columns):
-    # This dynamically builds the flat table for ANY two teams you give it
-    query = f"""
-    SELECT 
-        htp.total_goals AS home_squad_goals, htp.total_assists AS home_squad_assists,
-        htp.total_shots AS home_squad_shots, htp.total_shots_on_target AS home_squad_sot,
-        htp.tackles_won AS home_squad_tackles, htp.interceptions AS home_squad_interceptions,
-        htp.avg_plus_minus AS home_squad_plus_minus,
-        
-        hpp.fw_avg_goals AS home_fw_goals, hpp.fw_avg_shots AS home_fw_shots,
-        hpp.fw_avg_sot AS home_fw_sot, hpp.mf_avg_assists AS home_mf_assists,
-        hpp.mf_avg_crosses AS home_mf_crosses, hpp.mf_avg_plus_minus AS home_mf_plus_minus,
-        hpp.df_avg_tackles_won AS home_df_tackles, hpp.df_avg_interceptions AS home_df_interceptions,
-        hpp.df_avg_plus_minus AS home_df_plus_minus,
 
-        atp.total_goals AS away_squad_goals, atp.total_assists AS away_squad_assists,
-        atp.total_shots AS away_squad_shots, atp.total_shots_on_target AS away_squad_sot,
-        atp.tackles_won AS away_squad_tackles, atp.interceptions AS away_squad_interceptions,
-        atp.avg_plus_minus AS away_squad_plus_minus,
-        
-        app.fw_avg_goals AS away_fw_goals, app.fw_avg_shots AS away_fw_shots,
-        app.fw_avg_sot AS away_fw_sot, app.mf_avg_assists AS away_mf_assists,
-        app.mf_avg_crosses AS away_mf_crosses, app.mf_avg_plus_minus AS away_mf_plus_minus,
-        app.df_avg_tackles_won AS away_df_tackles, app.df_avg_interceptions AS away_df_interceptions,
-        app.df_avg_plus_minus AS away_df_plus_minus
+# ============================================================
+# 2. MATCH FEATURE EXTRACTOR
+# ============================================================
+def get_match_features(home_team, away_team, engine, feature_columns):
+    query = f"""
+    SELECT
+        htp.total_goals          AS h_season_goals,
+        htp.total_shots          AS h_season_shots,
+        htp.avg_plus_minus       AS h_squad_plus_minus,
+        hpp.fw_avg_goals         AS h_fw_rating,
+        hpp.fw_avg_shots         AS h_fw_shots,
+        hpp.mf_avg_assists       AS h_mf_creative_score,
+        hpp.mf_avg_crosses       AS h_mf_control_score,
+        hpp.df_avg_tackles_won   AS h_df_tackles,
+        hpp.df_avg_interceptions AS h_df_solidity,
+
+        atp.total_goals          AS a_season_goals,
+        atp.total_shots          AS a_season_shots,
+        atp.avg_plus_minus       AS a_squad_plus_minus,
+        app.fw_avg_goals         AS a_fw_rating,
+        app.fw_avg_shots         AS a_fw_shots,
+        app.mf_avg_assists       AS a_mf_creative_score,
+        app.mf_avg_crosses       AS a_mf_control_score,
+        app.df_avg_tackles_won   AS a_df_tackles,
+        app.df_avg_interceptions AS a_df_solidity
 
     FROM raw_team_power htp
     JOIN positional_power hpp ON htp.team_name = hpp.team_name
     CROSS JOIN raw_team_power atp
     JOIN positional_power app ON atp.team_name = app.team_name
-    WHERE htp.team_name = '{home_team}' AND atp.team_name = '{away_team}';
+    WHERE htp.team_name = '{home_team}'
+      AND atp.team_name = '{away_team}';
     """
     try:
         match_data = pd.read_sql(query, engine)
         if match_data.empty:
             return None
         return match_data[feature_columns]
-    except:
+    except Exception as e:
+        print(f"   ❌ Data extraction failed: {e}")
         return None
 
-# --- 3. TWO-LEGGED AGGREGATE LOGIC ---
-def simulate_two_legs(team_1, team_2, model, features, engine):
+
+# ============================================================
+# 3. HOME ADVANTAGE INJECTOR
+# Applies realistic home and away modifiers to raw probabilities
+# so Leg 1 and Leg 2 produce genuinely different results.
+#
+# Football analytics research shows home teams win ~46% of
+# top-flight matches vs ~30% for away sides. We encode this
+# by boosting the home team probability by a scaling factor
+# and compressing the away team's probability accordingly.
+# ============================================================
+HOME_BOOST  = 1.18   # Home team gets an 18% probability boost
+AWAY_DAMPEN = 0.82   # Away team's probability is dampened by 18%
+
+# Competitiveness floor — prevents any team from dropping
+# below this probability regardless of quality gap.
+# Set to 0.15 so even Galatasaray vs Bayern shows 15% minimum.
+FLOOR = 0.15
+
+def apply_home_advantage(raw_home_prob, raw_away_prob):
+    boosted_home = raw_home_prob * HOME_BOOST
+    dampened_away = raw_away_prob * AWAY_DAMPEN
+
+    # Re-normalise so they sum to 1.0
+    total = boosted_home + dampened_away
+    home_adj = boosted_home / total
+    away_adj = dampened_away / total
+
+    # Apply competitiveness floor — no team below 15%
+    if home_adj < FLOOR:
+        home_adj = FLOOR
+        away_adj = 1 - FLOOR
+    if away_adj < FLOOR:
+        away_adj = FLOOR
+        home_adj = 1 - FLOOR
+
+    return round(home_adj * 100, 1), round(away_adj * 100, 1)
+
+
+# ============================================================
+# 4. TWO-LEGGED AGGREGATE LOGIC
+# Leg 1: team_1 at home (team_1 gets home boost)
+# Leg 2: team_2 at home (team_2 gets home boost)
+# This means each leg produces DIFFERENT percentages,
+# creating genuine tension across the two matches.
+# ============================================================
+def simulate_two_legs(team_1, team_2, model, features, engine,
+                      match_num, round_name):
     classes = list(model.classes_)
-    
-    # Check if teams are in the model's brain to avoid crashing
+
+    print(f"  Match {match_num}")
+    print(f"  {team_1}  vs  {team_2}")
+    print(f"  {'─' * 44}")
+
     if team_1 not in classes or team_2 not in classes:
-        print(f"⚠️ Error: {team_1} or {team_2} not found in training data.")
-        return team_1 # Default fallback
-        
+        print(f"  ⚠️  One or both teams not found in training data.\n")
+        return team_1
+
     idx_1 = classes.index(team_1)
     idx_2 = classes.index(team_2)
 
-    # Leg 1: Team 1 is Home
+    # ── Leg 1: team_1 is at home ──────────────────────────
     leg1_features = get_match_features(team_1, team_2, engine, features)
-    leg1_probs = model.predict_proba(leg1_features)[0]
-    
-    # Leg 2: Team 2 is Home
+    leg1_probs    = model.predict_proba(leg1_features)[0]
+
+    raw_home_1 = leg1_probs[idx_1]   # team_1 raw home probability
+    raw_away_2 = leg1_probs[idx_2]   # team_2 raw away probability
+
+    leg1_team1_pct, leg1_team2_pct = apply_home_advantage(
+        raw_home_1, raw_away_2
+    )
+
+    # ── Leg 2: team_2 is at home ──────────────────────────
     leg2_features = get_match_features(team_2, team_1, engine, features)
-    leg2_probs = model.predict_proba(leg2_features)[0]
+    leg2_probs    = model.predict_proba(leg2_features)[0]
 
-    # Combine tactical dominance across 180 minutes
-    total_prob_team_1 = leg1_probs[idx_1] + leg2_probs[idx_1]
-    total_prob_team_2 = leg1_probs[idx_2] + leg2_probs[idx_2]
+    raw_home_2 = leg2_probs[idx_2]   # team_2 raw home probability
+    raw_away_1 = leg2_probs[idx_1]   # team_1 raw away probability
 
-    if total_prob_team_1 > total_prob_team_2:
-        print(f"   ⚔️ {team_1} ({total_prob_team_1:.2f}) defeats {team_2} ({total_prob_team_2:.2f}) on aggregate.")
-        return team_1
+    leg2_team2_pct, leg2_team1_pct = apply_home_advantage(
+        raw_home_2, raw_away_1
+    )
+
+    # ── Aggregate: sum adjusted probabilities across both legs
+    aggregate_1 = leg1_team1_pct + leg2_team1_pct
+    aggregate_2 = leg1_team2_pct + leg2_team2_pct
+
+    # Normalise aggregate to percentage
+    total_agg   = aggregate_1 + aggregate_2
+    agg_pct_1   = round(aggregate_1 / total_agg * 100, 1)
+    agg_pct_2   = round(100 - agg_pct_1, 1)
+
+    # ── Print leg-by-leg breakdown ─────────────────────────
+    print(f"  Leg 1  ({team_1} at home)")
+    print(f"    {team_1:<30} {leg1_team1_pct}%")
+    print(f"    {team_2:<30} {leg1_team2_pct}%")
+    print()
+    print(f"  Leg 2  ({team_2} at home)")
+    print(f"    {team_2:<30} {leg2_team2_pct}%")
+    print(f"    {team_1:<30} {leg2_team1_pct}%")
+    print()
+    print(f"  Aggregate over 180 minutes:")
+    print(f"    {team_1:<30} {agg_pct_1}%")
+    print(f"    {team_2:<30} {agg_pct_2}%")
+    print()
+
+    if aggregate_1 > aggregate_2:
+        winner = team_1
+        loser  = team_2
+        w_pct  = agg_pct_1
+        l_pct  = agg_pct_2
     else:
-        print(f"   ⚔️ {team_2} ({total_prob_team_2:.2f}) defeats {team_1} ({total_prob_team_1:.2f}) on aggregate.")
-        return team_2
+        winner = team_2
+        loser  = team_1
+        w_pct  = agg_pct_2
+        l_pct  = agg_pct_1
 
-# --- 4. NEUTRAL FINAL LOGIC ---
+    next_round_map = {
+        "Round of 16"   : "Quarter Finals",
+        "Quarter Finals" : "Semi Finals",
+        "Semi Finals"    : "the Final",
+    }
+    next_round = next_round_map.get(round_name, "the next round")
+
+    print(f"  🏅  {winner} wins on aggregate  ({w_pct}% vs {l_pct}%)")
+    print(f"  ✅  {winner} progresses to the {next_round}!")
+    print()
+
+    return winner
+
+
+# ============================================================
+# 5. NEUTRAL VENUE FINAL
+# Neither team gets home advantage — both are visitors.
+# We average both home/away permutations to find true strength.
+# Competitiveness floor still applies.
+# ============================================================
 def simulate_final(team_1, team_2, model, features, engine):
     classes = list(model.classes_)
-    idx_1 = classes.index(team_1)
-    idx_2 = classes.index(team_2)
+    idx_1   = classes.index(team_1)
+    idx_2   = classes.index(team_2)
 
-    # Simulate both variations to completely remove Home-Field advantage
     var1_features = get_match_features(team_1, team_2, engine, features)
     var2_features = get_match_features(team_2, team_1, engine, features)
 
-    neutral_prob_1 = (model.predict_proba(var1_features)[0][idx_1] + model.predict_proba(var2_features)[0][idx_1]) / 2
-    neutral_prob_2 = (model.predict_proba(var1_features)[0][idx_2] + model.predict_proba(var2_features)[0][idx_2]) / 2
+    # Average both permutations — no home boost applied
+    raw_1 = (
+        model.predict_proba(var1_features)[0][idx_1]
+      + model.predict_proba(var2_features)[0][idx_1]
+    ) / 2
 
-    print(f"\n🏟️ THE CHAMPIONS LEAGUE FINAL 🏟️")
-    print(f"   {team_1} vs {team_2}")
-    
-    if neutral_prob_1 > neutral_prob_2:
-        print(f"\n🏆 {team_1.upper()} WINS THE CHAMPIONS LEAGUE! (Dominance: {neutral_prob_1*100:.1f}%)")
+    raw_2 = (
+        model.predict_proba(var1_features)[0][idx_2]
+      + model.predict_proba(var2_features)[0][idx_2]
+    ) / 2
+
+    # Normalise
+    total  = raw_1 + raw_2
+    pct_1  = raw_1 / total
+    pct_2  = raw_2 / total
+
+    # Apply competitiveness floor for the final too
+    if pct_1 < FLOOR:
+        pct_1 = FLOOR
+        pct_2 = 1 - FLOOR
+    if pct_2 < FLOOR:
+        pct_2 = FLOOR
+        pct_1 = 1 - FLOOR
+
+    pct_1 = round(pct_1 * 100, 1)
+    pct_2 = round(100 - pct_1, 1)
+
+    print("=" * 60)
+    print("🏟️   THE UEFA CHAMPIONS LEAGUE FINAL")
+    print("     Neutral venue · No home advantage")
+    print("=" * 60)
+    print(f"  {team_1}  vs  {team_2}")
+    print(f"  {'─' * 44}")
+    print(f"    {team_1:<30} {pct_1}%  win probability")
+    print(f"    {team_2:<30} {pct_2}%  win probability")
+    print()
+
+    if pct_1 > pct_2:
+        champion  = team_1
+        runner_up = team_2
+        dom       = pct_1
     else:
-        print(f"\n🏆 {team_2.upper()} WINS THE CHAMPIONS LEAGUE! (Dominance: {neutral_prob_2*100:.1f}%)")
+        champion  = team_2
+        runner_up = team_1
+        dom       = pct_2
 
-# --- 5. THE TOURNAMENT BRACKET RUNNER ---
+    print("=" * 60)
+    print(f"🏆  {champion.upper()} ARE CHAMPIONS OF EUROPE!")
+    print(f"    Winning probability : {dom}%")
+    print(f"    Runner-up           : {runner_up}")
+    print("=" * 60)
+
+
+# ============================================================
+# 6. ROUND RUNNER
+# ============================================================
+def run_round(teams, model, features, engine, round_name):
+    print()
+    print("=" * 60)
+    print(f"  🔥  {round_name.upper()}")
+    print("=" * 60)
+    print()
+
+    winners   = []
+    match_num = 1
+
+    for i in range(0, len(teams), 2):
+        winner = simulate_two_legs(
+            teams[i], teams[i + 1],
+            model, features, engine,
+            match_num, round_name
+        )
+        winners.append(winner)
+        match_num += 1
+
+    print(f"  {'─' * 44}")
+    print(f"  {round_name} complete. Teams advancing:")
+    for idx, team in enumerate(winners, 1):
+        print(f"    {idx}.  {team}")
+    print()
+
+    return winners
+
+
+# ============================================================
+# 7. MAIN TOURNAMENT RUNNER
+# ============================================================
 def run_tournament(matchups, model, features, engine):
-    print("\n" + "="*50)
-    print("🔥 COMMENCING ROUND OF 16 🔥")
-    print("="*50)
-    quarter_finalists = []
-    for tie in matchups:
-        winner = simulate_two_legs(tie[0], tie[1], model, features, engine)
-        quarter_finalists.append(winner)
+    r16_teams = [team for tie in matchups for team in tie]
 
-    print("\n" + "="*50)
-    print("🔥 COMMENCING QUARTER-FINALS 🔥")
-    print("="*50)
-    semi_finalists = []
-    # Pair them up consecutively (1v2, 3v4, 5v6, 7v8)
-    for i in range(0, 8, 2):
-        winner = simulate_two_legs(quarter_finalists[i], quarter_finalists[i+1], model, features, engine)
-        semi_finalists.append(winner)
+    quarter_finalists = run_round(
+        r16_teams, model, features, engine, "Round of 16"
+    )
+    semi_finalists = run_round(
+        quarter_finalists, model, features, engine, "Quarter Finals"
+    )
+    finalists = run_round(
+        semi_finalists, model, features, engine, "Semi Finals"
+    )
 
-    print("\n" + "="*50)
-    print("🔥 COMMENCING SEMI-FINALS 🔥")
-    print("="*50)
-    finalists = []
-    for i in range(0, 4, 2):
-        winner = simulate_two_legs(semi_finalists[i], semi_finalists[i+1], model, features, engine)
-        finalists.append(winner)
-
-    # The Grand Final
     simulate_final(finalists[0], finalists[1], model, features, engine)
 
 
+# ============================================================
+# 8. ENTRY POINT
+# ============================================================
 if __name__ == "__main__":
+
     trained_model, feature_cols, db_engine = load_and_train_model()
+
     round_of_16_draw = [
-        ('Chelsea', 'Paris Saint-Germain'),
-        ('Liverpool', 'PROXY_FOR_GALATASARAY'), 
-        ('Manchester City', 'Real Madrid'),
-        ('Bayern Munich', 'Atalanta'),
-        ('Barcelona', 'Newcastle United'),
+        ('Chelsea',           'Paris Saint-Germain'),
+        ('Liverpool',         'Galatasaray'),
+        ('Manchester City',   'Real Madrid'),
+        ('Bayern Munich',     'Atalanta'),
+        ('Barcelona',         'Newcastle United'),
         ('Tottenham Hotspur', 'Atlético Madrid'),
-        ('PROXY_FOR_SPORTING', 'PROXY_FOR_BODO'), 
-        ('Arsenal', 'Bayer Leverkusen')
+        ('Sporting CP',       'Bodø/Glimt'),
+        ('Arsenal',           'Leverkusen'),
     ]
-    
-    # Run the simulation!
+
     run_tournament(round_of_16_draw, trained_model, feature_cols, db_engine)
