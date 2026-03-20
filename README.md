@@ -1,5 +1,5 @@
 # 🏆 UEFA Champions League: Tactical Match Predictor
-**An End-to-End Data Science Pipeline: PostgreSQL | Python | Power BI | Random Forest**
+**An End-to-End Data Analytics Pipeline: PostgreSQL | Python | Power BI | Random Forest**
 
 ## 📌 Project Overview
 The **UCL Match Predictor** is a sophisticated analytics platform designed to move beyond surface-level football statistics. While traditional models rely on historical win-loss records, this project utilizes **granular positional data**—such as defensive solidity (interceptions and tackles) and midfield creative scores (crosses and assists)—to classify and predict match outcomes.
@@ -62,10 +62,3 @@ The result is a two-fold solution:
 * `/Scripts`: Python files including `tournament_simulator.py` and ETL pipelines.
 * `/Database`: SQL schemas and table initialization queries.
 * `/Dashboard`: The `.pbix` file for the Power BI Walkthrough.
-
----
-
-**Contact Information**
-* **Name:** [Your Name]
-* **Role:** Data Science Student / Analyst
-* **LinkedIn:** [Your Link]
