@@ -1,7 +1,7 @@
 # 🏆 UEFA Champions League: Tactical Match Predictor
 **An End-to-End Data Analytics Pipeline: PostgreSQL | Python | Power BI | Random Forest**
 
-## 📌 Project Overview
+## Project Overview
 The **UCL Match Predictor** is a sophisticated analytics platform designed to move beyond surface-level football statistics. While traditional models rely on historical win-loss records, this project utilizes **granular positional data**—such as defensive solidity (interceptions and tackles) and midfield creative scores (crosses and assists)—to classify and predict match outcomes.
 
 
@@ -12,7 +12,7 @@ The result is a two-fold solution:
 
 ---
 
-## 🛠️ The Technical Stack
+## The Technical Stack
 * **Database:** PostgreSQL (Relational schema design, ETL, and complex joins)
 * **Programming:** Python 3.13 (Pandas, SQLAlchemy, Scikit-Learn)
 * **Machine Learning:** Random Forest Classifier (Supervised Learning)
@@ -21,7 +21,7 @@ The result is a two-fold solution:
 
 ---
 
-## 🚀 The Data Journey (The STAR Method)
+## The Data Journey 
 
 ### 1. Data Engineering and Processing
 * **Situation:** Historical UCL data was scattered across disparate sources and often protected by anti-scraping measures. 
@@ -45,19 +45,19 @@ The result is a two-fold solution:
 
 ---
 
-## 📈 Key Results and Insights
+## Key Results and Insights
 * **Feature Importance:** The model revealed that **Midfield Creative Scores** and **Defensive Solidity (Interceptions)** are stronger predictors of UCL knockout success than raw "Total Goals Scored" during the regular season.
 * **Simulated Outcomes:** The tournament engine successfully simulated the bracket, identifying tactical mismatches in high-profile ties.
 
 ---
 
-## ⚠️ Challenges and Limitations
+## Challenges and Limitations
 * **The Unpredictability Factor:** Football is inherently chaotic. This model assumes historical averages translate to 90-minute performance; it does not currently account for red cards, injuries, or mid-game tactical shifts.
 * **Data Latency:** The model relies on post-match aggregated stats. Future iterations could incorporate real-time "Expected Goals" (xG) data for even higher precision.
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 * `/Data`: Raw CSV files and source datasets.
 * `/Scripts`: Python files including `tournament_simulator.py` and ETL pipelines.
 * `/Database`: SQL schemas and table initialization queries.
